@@ -1,6 +1,6 @@
 // Homebridge plugin for thermostats supported by Infinitive <https://github.com/acd/infinitive/>
-// Author John Burwell
-// Version 0.0.1	
+// Author John Burwell; updated by Charlie Heitzig and Derek Haidle
+// Version 1.0.2
 
 
 var Service, Characteristic;
@@ -23,6 +23,7 @@ function Thermostat(log, config) {
 	this.manufacturer = config["manufacturer"] || "Homebridge";
 	this.model = config["model"] ||	"Infinitive";
 	this.serial_number = config["serial_number"] ||	"XXX.XXX.XXX.XXX";
+	this.outdoorName = "Outdoor Temperature";
 
 	// Thermostat state initialization
 	this.CurrentHeatingCoolingState = Characteristic.CurrentHeatingCoolingState.OFF;
@@ -35,6 +36,7 @@ function Thermostat(log, config) {
 	this.TemperatureDisplayUnits = Characteristic.TemperatureDisplayUnits.FAHRENHEIT;
 	this.CurrentFanState = Characteristic.CurrentFanState.INACTIVE;
 	this.CurrentFanActive = Characteristic.Active.INACTIVE;
+	this.CurrentOutdoorTemperature = 15;
 
 	// Infinitive API configuration
 	this.username = config["username"] || "";
@@ -47,7 +49,8 @@ function Thermostat(log, config) {
 	// Instantiate services
 	this.ThermostatService = new Service.Thermostat(this.name);
 	this.FanService = new Service.Fanv2(this.name);
-	this.FilterMaintenanceService = new Service.FilterMaintenance(this.name);
+	// this.FilterMaintenanceService = new Service.FilterMaintenance(this.name); // CJH commented out because unused
+	this.TemperatureService = new Service.TemperatureSensor();
 
 }
 
@@ -144,7 +147,8 @@ Thermostat.prototype = {
 		this.log('Setting target mode from/to ', this.TargetHeatingCoolingState, value);
 		if (value == Characteristic.TargetHeatingCoolingState.OFF) {
 			this.TargetHeatingCoolingState = Characteristic.TargetHeatingCoolingState.OFF;
-			tarState = "off";
+			tarState = "";
+			// CJH turned this off so someone can't accidentally turn thermostat off remotely
 		}
 		else if (value == Characteristic.TargetHeatingCoolingState.HEAT) {
 			this.TargetHeatingCoolingState = Characteristic.TargetHeatingCoolingState.HEAT;
@@ -197,7 +201,7 @@ Thermostat.prototype = {
 				this.log('response success');
 				json = JSON.parse(body);
 				if (this.TemperatureDisplayUnits == Characteristic.TemperatureDisplayUnits.CELSIUS){
-					this.log('Current temperature in degrees Celsius is %s (%s)', json.currentTemp, this.TemperatureDisplayUnits);
+					this.log('Current temperature in degrees Celsius is %s (%s)', this.fToC(json.currentTemp), this.TemperatureDisplayUnits);
 					this.CurrentTemperature = parseFloat(json.currentTemp);
 				}
 				else if (this.TemperatureDisplayUnits == Characteristic.TemperatureDisplayUnits.FAHRENHEIT){
@@ -208,6 +212,36 @@ Thermostat.prototype = {
 			} else {
 				this.log('Error getting current temperature: %s', err);
 				return callback("Error getting current temperature: " + err);
+			}
+			}).bind(this));
+	},
+
+	getCurrentOutdoorTemperature: function(callback) {
+		this.log('Getting current outdoor temperature from: ', this.apiEndpoint + '/zone/1/config');
+		return request.get({
+			url: this.apiEndpoint + '/zone/1/config',
+			auth: {
+			user: this.username,
+			pass: this.password
+		}
+		}, (function(err, response, body) {
+			var json;
+			if (!err && response.statusCode === 200) {
+				this.log('response success');
+				json = JSON.parse(body);
+				if (this.TemperatureDisplayUnits == Characteristic.TemperatureDisplayUnits.CELSIUS){
+					this.log('Current outdoor temperature in degrees Celsius is %s (%s)', this.fToC(json.outdoorTemp), this.TemperatureDisplayUnits);
+					this.CurrentOutdoorTemperature = parseFloat(json.outdoorTemp);
+				}
+				else if (this.TemperatureDisplayUnits == Characteristic.TemperatureDisplayUnits.FAHRENHEIT){
+					this.log('Current outdoor temperature in degrees Fahrenheit is %s (%s)', json.outdoorTemp, this.TemperatureDisplayUnits);
+					this.CurrentOutdoorTemperature = this.fToC(parseFloat(json.outdoorTemp));
+					this.log(this.CurrentOutdoorTemperature);
+				}
+			return callback(null, this.CurrentOutdoorTemperature);
+			} else {
+				this.log('Error getting current outdoor temperature: %s', err);
+				return callback("Error getting current outdoor temperature: " + err);
 			}
 			}).bind(this));
 	},
@@ -669,7 +703,18 @@ Thermostat.prototype = {
 			minStep: 0.1
 		});
 
-		return [informationService, this.ThermostatService];
+		this.TemperatureService
+		.getCharacteristic(Characteristic.CurrentTemperature)
+		.on('get', this.getCurrentTemperature.bind(this));
+		//.on('get', this.getCurrentOutdoorTemperature.bind(this));
+		//.updateValue(this.CurrentOutdoorTemperature);
+
+		this.TemperatureService
+		.getCharacteristic(Characteristic.Name)
+		//.updateValue("Outdoor Temperature");
+		.updateValue(this.outdoorName);
+
+		return [informationService, this.ThermostatService, this.TemperatureService];
 
 	}
 
